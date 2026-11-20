@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Conway's Game of Life</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0a0a0f;
+    color: #e0e0e0;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+    padding: 20px;
+  }
+
+  h1 {
+    font-size: 1.4rem;
+    font-weight: 300;
+    letter-spacing: 2px;
+    margin-bottom: 16px;
+    color: #7fdbca;
+  }
+
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
+    align-items: center;
+    justify-content: center;
+  }
+
+  button {
+    background: #1a1a2e;
+    color: #e0e0e0;
+    border: 1px solid #333;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.15s;
+  }
+
+  button:hover { background: #2a2a4e; border-color: #7fdbca; }
+  button.active { background: #7fdbca; color: #0a0a0f; border-color: #7fdbca; }
+  button:active { transform: scale(0.96); }
+
+  .slider-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8rem;
+    color: #888;
+  }
+
+  input[type="range"] {
+    width: 80px;
+    accent-color: #7fdbca;
+  }
+
+  .stats {
+    font-size: 0.8rem;
+    color: #666;
+    margin-bottom: 10px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .stats span { color: #7fdbca; }
+
+  canvas {
+    border: 1px solid #222;
+    border-radius: 4px;
+    cursor: crosshair;
+    image-rendering: pixelated;
+  }
+
+  .pattern-bar {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .pattern-bar button {
+    font-size: 0.75rem;
+    padding: 5px 10px;
+  }
+
+  .hint {
+    font-size: 0.7rem;
+    color: #444;
+    margin-top: 10px;
+  }
+</style>
+</head>
+<body>
+
+<h1>CONWAY'S GAME OF LIFE</h1>
+
+<div class="controls">
+  <button id="playBtn">▶ Play</button>
+  <button id="stepBtn">Step</button>
+  <button id="clearBtn">Clear</button>
+  <button id="randomBtn">Random</button>
+  <div class="slider-group">
+    Speed <input type="range" id="speedSlider" min="1" max="60" value="15">
+    <span id="speedVal">15</span> fps
+  </div>
+  <div class="slider-group">
+    Density <input type="range" id="densitySlider" min="5" max="80" value="30">
+    <span id="densityVal">30</span>%
+  </div>
+</div>
+
+<div class="pattern-bar">
+  <button data-pattern="glider">Glider</button>
+  <button data-pattern="lwss">Lightweight SS</button>
+  <button data-pattern="pulsar">Pulsar</button>
+  <button data-pattern="gosper">Gosper Gun</button>
+  <button data-pattern="rpentomino">R-Pentomino</button>
+  <button data-pattern="acorn">Acorn</button>
+</div>
+
+<div class="stats">
+  Gen: <span id="genCount">0</span> &nbsp;|&nbsp;
+  Population: <span id="popCount">0</span> &nbsp;|&nbsp;
+  Grid: <span id="gridSize">0×0</span>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<p class="hint">Click/drag to draw · Right-click to erase · Space = play/pause · S = step · C = clear</p>
+
+<script>
+(() => {
+  // --- Configuration ---
+  const CELL_SIZE = 6;
+  const BG_COLOR = '#0a0a0f';
+  const ALIVE_COLORS = [
+    '#7fdbca', '#4ecdc4', '#45b7d1', '#2980b9',
+    '#6c5ce7', '#a29bfe', '#fd79a8', '#e17055'
+  ];
+
+  // --- State ---
+  let cols, rows;
+  let grid, nextGrid;
+  let running = false;
+  let generation = 0;
+  let population = 0;
+  let lastTime = 0;
+  let animFrameId = null;
+  let drawing = false;
+  let drawValue = 1; // 1 = draw, 0 = erase
+
+  // --- DOM ---
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  const playBtn = document.getElementById('playBtn');
+  const stepBtn = document.getElementById('stepBtn');
+  const clearBtn = document.getElementById('clearBtn');
+  const randomBtn = document.getElementById('randomBtn');
+  const speedSlider = document.getElementById('speedSlider');
+  const densitySlider = document.getElementById('densitySlider');
+  const speedVal = document.getElementById('speedVal');
+  const densityVal = document.getElementById('densityVal');
+  const genCount = document.getElementById('genCount');
+  const popCount = document.getElementById('popCount');
+  const gridSizeEl = document.getElementById('gridSize');
+
+  // --- Patterns (each is an array of [row, col] offsets) ---
+  const PATTERNS = {
+    glider: [[0,1],[1,2],[2,0],[2,1],[2,2]],
+    lwss: [[0,1],[0,4],[1,0],[2,0],[2,4],[3,0],[3,1],[3,2],[3,3]],
+    pulsar: [
+      [0,2],[0,3],[0,4],[0,8],[0,9],[0,10],
+      [2,0],[2,5],[2,7],[2,12],
+      [3,0],[3,5],[3,7],[3,12],
+      [4,0],[4,5],[4,7],[4,12],
+      [5,2],[5,3],[5,4],[5,8],[5,9],[5,10],
+      [7,2],[7,3],[7,4],[7,8],[7,9],[7,10],
+      [8,0],[8,5],[8,7],[8,12],
+      [9,0],[9,5],[9,7],[9,12],
+      [10,0],[10,5],[10,7],[10,12],
+      [12,2],[12,3],[12,4],[12,8],[12,9],[12,10]
+    ],
+    gosper: [
+      [0,24],[1,22],[1,24],[2,12],[2,13],[2,20],[2,21],[2,34],[2,35],
+      [3,11],[3,15],[3,20],[3,21],[3,34],[3,35],
+      [4,0],[4,1],[4,10],[4,16],[4,20],[4,21],[4,34],[4,35],
+      [5,0],[5,1],[5,10],[5,14],[5,16],[5,17],[5,22],[5,24],
+      [6,10],[6,12],[6,16],[6,24],
+      [7,11],[7,13],
+      [8,12]
+    ],
+    rpentomino: [[0,1],[0,2],[1,0],[1,1],[2,1]],
+    acorn: [[0,1],[1,3],[2,0],[2,1],[2,4],[2,5],[2,6]]
+  };
+
+  // --- Init ---
+  function init() {
+    const maxW = window.innerWidth - 40;
+    const maxH = window.innerHeight - 220;
+    cols = Math.floor(maxW / CELL_SIZE);
+    rows = Math.floor(maxH / CELL_SIZE);
+    cols = Math.max(cols, 40);
+    rows = Math.max(rows, 30);
+
+    canvas.width = cols * CELL_SIZE;
+    canvas.height = rows * CELL_SIZE;
+
+    grid = new Uint8Array(cols * rows);
+    nextGrid = new Uint8Array(cols * rows);
+
+    gridSizeEl.textContent = `${cols}×${rows}`;
+    render();
+  }
+
+  // --- Core Logic ---
+  function idx(r, c) {
+    // Toroidal (wrapping) grid
+    r = ((r % rows) + rows) % rows;
+    c = ((c % cols) + cols) % cols;
+    return r * cols + c;
+  }
+
+  function countNeighbors(r, c) {
+    let count = 0;
+    for (let dr = -1; dr <= 1; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        if (dr === 0 && dc === 0) continue;
+        count += grid[idx(r + dr, c + dc)];
+      }
+    }
+    return count;
+  }
+
+  function step() {
+    population = 0;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const i = r * cols + c;
+        const neighbors = countNeighbors(r, c);
+        if (grid[i]) {
+          nextGrid[i] = (neighbors === 2 || neighbors === 3) ? 1 : 0;
+        } else {
+          nextGrid[i] = (neighbors === 3) ? 1 : 0;
+        }
+        population += nextGrid[i];
+      }
+    }
+    [grid, nextGrid] = [nextGrid, grid];
+    generation++;
+    genCount.textContent = generation;
+    popCount.textContent = population;
+  }
+
+  // --- Rendering ---
+  function render() {
+    ctx.fillStyle = BG_COLOR;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Draw alive cells with age-based color
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (grid[r * cols + c]) {
+          const age = (generation + r * 7 + c * 13) % ALIVE_COLORS.length;
+          ctx.fillStyle = ALIVE_COLORS[age];
+          ctx.fillRect(
+            c * CELL_SIZE + 1,
+            r * CELL_SIZE + 1,
+            CELL_SIZE - 2,
+            CELL_SIZE - 2
+          );
+        }
+      }
+    }
+
+    // Grid lines (subtle)
+    if (CELL_SIZE >= 5) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      for (let c = 0; c <= cols; c++) {
+        ctx.moveTo(c * CELL_SIZE, 0);
+        ctx.lineTo(c * CELL_SIZE, canvas.height);
+      }
+      for (let r = 0; r <= rows; r++) {
+        ctx.moveTo(0, r * CELL_SIZE);
+        ctx.lineTo(canvas.width, r * CELL_SIZE);
+      }
+      ctx.stroke();
+    }
+  }
+
+  // --- Animation Loop ---
+  function loop(timestamp) {
+    if (!running) return;
+    const interval = 1000 / parseInt(speedSlider.value);
+    if (timestamp - lastTime >= interval) {
+      step();
+      render();
+      lastTime = timestamp;
+    }
+    animFrameId = requestAnimationFrame(loop);
+  }
+
+  function play() {
+    if (running) return;
+    running = true;
+    playBtn.textContent = '⏸ Pause';
+    playBtn.classList.add('active');
+    lastTime = performance.now();
+    animFrameId = requestAnimationFrame(loop);
+  }
+
+  function pause() {
+    running = false;
+    playBtn.textContent = '▶ Play';
+    playBtn.classList.remove('active');
+    if (animFrameId) cancelAnimationFrame(animFrameId);
+  }
+
+  // --- Actions ---
+  function clearGrid() {
+    pause();
+    grid.fill(0);
+    generation = 0;
+    population = 0;
+    genCount.textContent = '0';
+    popCount.textContent = '0';
+    render();
+  }
+
+  function randomize() {
+    pause();
+    const density = parseInt(densitySlider.value) / 100;
+    grid.fill(0);
+    for (let i = 0; i < grid.length; i++) {
+      grid[i] = Math.random() < density ? 1 : 0;
+    }
+    generation = 0;
+    population = 0;
+    genCount.textContent = '0';
+    popCount.textContent = population;
+    render();
+  }
+
+  function placePattern(name) {
+    const cells = PATTERNS[name];
+    if (!cells) return;
+    // Find bounding box to center it
+    let maxR = 0, maxC = 0;
+    cells.forEach(([r, c]) => {
+      maxR = Math.max(maxR, r);
+      maxC = Math.max(maxC, c);
+    });
+    const offR = Math.floor((rows - maxR) / 2);
+    const offC = Math.floor((cols - maxC) / 2);
+    cells.forEach(([r, c]) => {
+      const rr = ((r + offR) % rows + rows) % rows;
+      const cc = ((c + offC) % cols + cols) % cols;
+      grid[rr * cols + cc] = 1;
+    });
+    // Recount population
+    population = 0;
+    for (let i = 0; i < grid.length; i++) population += grid[i];
+    popCount.textContent = population;
+    render();
+  }
+
+  // --- Mouse Interaction ---
+  function getCellFromEvent(e) {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    return {
+      r: Math.floor(y / CELL_SIZE),
+      c: Math.floor(x / CELL_SIZE)
+    };
+  }
+
+  canvas.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const { r, c } = getCellFromEvent(e);
+    if (r < 0 || r >= rows || c < 0 || c >= cols) return;
+    drawing = true;
+    drawValue = e.button === 2 ? 0 : (grid[r * cols + c] ? 0 : 1);
+    grid[r * cols + c] = drawValue;
+    population += drawValue - (drawValue ? 0 : 1);
+    popCount.textContent = population;
+    render();
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    if (!drawing) return;
+    const { r, c } = getCellFromEvent(e);
+    if (r < 0 || r >= rows || c < 0 || c >= cols) return;
+    const i = r * cols + c;
+    if (grid[i] !== drawValue) {
+      population += drawValue - grid[i];
+      grid[i] = drawValue;
+      popCount.textContent = population;
+      render();
+    }
+  });
+
+  window.addEventListener('mouseup', () => { drawing = false; });
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // --- Touch Support ---
+  canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    const touch = e.touches[0];
+    const { r, c } = getCellFromEvent(touch);
+    if (r < 0 || r >= rows || c < 0 || c >= cols) return;
+    drawing = true;
+    drawValue = grid[r * cols + c] ? 0 : 1;
+    grid[r * cols + c] = drawValue;
+    render();
+  });
+
+  canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    if (!drawing) return;
+    const touch = e.touches[0];
+    const { r, c } = getCellFromEvent(touch);
+    if (r < 0 || r >= rows || c < 0 || c >= cols) return;
+    grid[r * cols + c] = drawValue;
+    render();
+  });
+
+  canvas.addEventListener('touchend', () => { drawing = false; });
+
+  // --- Keyboard ---
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { e.preventDefault(); running ? pause() : play(); }
+    if (e.code === 'KeyS') { pause(); step(); render(); }
+    if (e.code === 'KeyC') { clearGrid(); }
+    if (e.code === 'KeyR') { randomize(); }
+  });
+
+  // --- Button Listeners ---
+  playBtn.addEventListener('click', () => running ? pause() : play());
+  stepBtn.addEventListener('click', () => { pause(); step(); render(); });
+  clearBtn.addEventListener('click', clearGrid);
+  randomBtn.addEventListener('click', randomize);
+
+  speedSlider.addEventListener('input', () => { speedVal.textContent = speedSlider.value; });
+  densitySlider.addEventListener('input', () => { densityVal.textContent = densitySlider.value; });
+
+  document.querySelectorAll('[data-pattern]').forEach(btn => {
+    btn.addEventListener('click', () => placePattern(btn.dataset.pattern));
+  });
+
+  // --- Resize ---
+  window.addEventListener('resize', () => {
+    pause();
+    init();
+  });
+
+  // --- Start ---
+  init();
+  // Seed with a glider gun on load
+  placePattern('gosper');
+})();
+</script>
+</body>
+</html>   
